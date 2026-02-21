@@ -1,0 +1,22 @@
+# ── Web framework ────────────────────────────────────────────────────────────
+fastapi
+uvicorn[standard]          # ASGI server to run FastAPI
+python-multipart           # required by FastAPI for file uploads (UploadFile)
+
+# ── HTTP client (Ollama calls) ────────────────────────────────────────────────
+requests
+
+# ── PowerPoint generation ─────────────────────────────────────────────────────
+python-pptx
+
+# ── Vector DB + embeddings ────────────────────────────────────────────────────
+chromadb
+sentence-transformers      # all-MiniLM-L6-v2 embedding model
+
+# ── File parsing ──────────────────────────────────────────────────────────────
+pdfplumber                 # PDF text extraction
+python-docx                # DOCX text extraction
+# (TXT files use stdlib only — no extra package needed)
+
+# ── Data validation ───────────────────────────────────────────────────────────
+pydantic                   # comes with FastAPI but listed explicitly for clarity
