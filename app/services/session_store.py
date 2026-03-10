@@ -1,21 +1,25 @@
 """
-In-memory session store for slide editing workflow.
-Each session holds the current slide JSON and metadata.
+session_store.py  —  app/services/session_store.py
+
+In-memory session store. Each session is fully isolated —
+its own slides, topic, theme, edit history, and ChromaDB collection.
 """
 
 import uuid
 from typing import Optional
+from app.services.context_service import delete_session_context
 
 
 _sessions: dict = {}
 
 
-def create_session(slides_json: list, topic: str) -> str:
+def create_session(slides_json: list, topic: str, theme: str = "corporate") -> str:
     session_id = str(uuid.uuid4())
     _sessions[session_id] = {
-        "slides": slides_json,  # list of dicts: [{title, bullets}, ...]
+        "slides": slides_json,
         "topic": topic,
-        "history": [],  # list of edit prompts applied so far
+        "theme": theme,
+        "history": [],
     }
     return session_id
 
@@ -33,4 +37,10 @@ def update_session(session_id: str, slides_json: list, edit_prompt: str):
 
 
 def delete_session(session_id: str):
-    _sessions.pop(session_id, None)
+    """
+    Full cleanup — removes in-memory state AND the ChromaDB collection
+    so uploaded file context doesn't leak into future sessions.
+    """
+    if session_id in _sessions:
+        del _sessions[session_id]
+    delete_session_context(session_id)

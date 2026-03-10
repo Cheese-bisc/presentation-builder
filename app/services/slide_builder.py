@@ -1,32 +1,44 @@
+"""
+slide_builder.py  —  app/services/slide_builder.py
+
+content_generator now returns a list of dicts directly.
+build_slides() accepts either a list (new) or a JSON string (fallback).
+"""
+
 import json
 import re
 from app.models.slide_model import Slide
 
 
-def _extract_json(text: str) -> str:
-    """
-    Strip any markdown code fences or preamble the LLM might add
-    so we get a clean JSON string even if the model isn't perfectly obedient.
-    """
-    # Try to find a JSON array in the response
-    match = re.search(r"\[.*\]", text, re.DOTALL)
-    if match:
-        return match.group(0)
-    return text  # fall through and let json.loads raise a clear error
+def _extract_json(text: str) -> list:
+    fenced = re.search(r"```(?:json)?\s*(\[.*?\])\s*```", text, re.DOTALL)
+    if fenced:
+        return json.loads(fenced.group(1))
+    array_match = re.search(r"\[.*\]", text, re.DOTALL)
+    if array_match:
+        return json.loads(array_match.group(0))
+    return json.loads(text)
 
 
-def build_slides(llm_output: str) -> list:
-    """Parse LLM JSON output into a list of Slide objects."""
-    clean = _extract_json(llm_output)
-    slides_json = json.loads(clean)
+def build_slides(llm_output) -> list:
+    """
+    Accept either a list of dicts (from updated content_generator)
+    or a raw JSON string (legacy / fallback).
+    Returns a list of Slide objects.
+    """
+    if isinstance(llm_output, list):
+        slides_json = llm_output
+    else:
+        slides_json = _extract_json(llm_output)
+
     return [Slide(title=s["title"], bullets=s["bullets"]) for s in slides_json]
 
 
 def slides_to_dict(slides) -> list:
-    """Convert Slide objects → plain dicts for storage / JSON responses."""
+    """Slide objects → plain dicts for session storage and JSON responses."""
     return [{"title": s.title, "bullets": s.bullets} for s in slides]
 
 
 def dict_to_slides(slides_json: list) -> list:
-    """Convert plain dicts → Slide objects."""
+    """Plain dicts → Slide objects for export."""
     return [Slide(title=s["title"], bullets=s["bullets"]) for s in slides_json]

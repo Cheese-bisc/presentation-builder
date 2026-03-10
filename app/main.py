@@ -12,8 +12,14 @@ from app.services.context_service import retrieve_context
 from app.services.content_generator import generate_slide_content, edit_slide_content
 from app.services.slide_builder import build_slides, slides_to_dict, dict_to_slides
 from app.services.ppt_exporter import export_ppt
-from app.services.session_store import create_session, get_session, update_session
+from app.services.session_store import (
+    create_session,
+    get_session,
+    update_session,
+    delete_session,
+)
 from app.services.file_service import ingest_file, SUPPORTED_EXTENSIONS
+from app.services.theme_service import list_themes
 
 app = FastAPI(title="PPT Generator")
 
@@ -29,29 +35,41 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 
 # ---------------------------------------------------------------------------
-# 0. UPLOAD FILE  — extract text, chunk it, store in ChromaDB
-#    Call this BEFORE /generate if the user attaches a file.
-#    /generate will automatically pull the stored context via retrieve_context()
+# 0. THEMES
+# ---------------------------------------------------------------------------
+@app.get("/themes")
+def get_themes():
+    return list_themes()
+
+
+# ---------------------------------------------------------------------------
+# 1. UPLOAD FILE
+# session_id is required — file is scoped to this session only.
+# Frontend should create a pending session_id before upload, or pass the
+# session_id it already has. We use a simple query param for this.
 # ---------------------------------------------------------------------------
 @app.post("/upload")
-async def upload_file(file: UploadFile = File(...)):
-    ext = Path(file.filename).suffix.lower()
+async def upload_file(session_id: str, file: UploadFile = File(...)):
+    filename: str = file.filename or "uploaded_file"
+    ext = Path(filename).suffix.lower()
+
     if ext not in SUPPORTED_EXTENSIONS:
         raise HTTPException(
             status_code=400,
             detail=f"Unsupported file type '{ext}'. Allowed: {SUPPORTED_EXTENSIONS}",
         )
 
-    save_path = os.path.join(UPLOAD_DIR, file.filename)
+    save_path = os.path.join(UPLOAD_DIR, filename)
     with open(save_path, "wb") as f:
         shutil.copyfileobj(file.file, f)
 
-    result = ingest_file(save_path, source_name=file.filename)
+    # Ingest scoped to this session — no global contamination
+    result = ingest_file(save_path, source_name=filename, session_id=session_id)
 
     return JSONResponse(
         {
             "message": "File uploaded and indexed successfully.",
-            "file": file.filename,
+            "file": filename,
             "chunks_stored": result["chunks_stored"],
             "preview": result["preview"],
         }
@@ -59,32 +77,42 @@ async def upload_file(file: UploadFile = File(...)):
 
 
 # ---------------------------------------------------------------------------
-# 1. GENERATE  — creates a new session and returns slide JSON for preview
+# 2. GENERATE
 # ---------------------------------------------------------------------------
 @app.post("/generate")
 def generate_presentation(req: PresentationRequest):
     parsed = parse_prompt(req.prompt)
+    theme = req.theme or "corporate"
 
-    # Pulls context — includes any uploaded file content automatically
-    context_chunks = retrieve_context(parsed["topic"])
+    # Create session first so we have a session_id to scope context retrieval
+    # Initialise with empty slides — updated below
+    session_id = create_session([], parsed["topic"], theme)
+
+    # Retrieve only from this session's uploaded docs
+    context_chunks = retrieve_context(session_id, parsed["topic"])
     context = "\n\n".join(context_chunks)
 
-    llm_output = generate_slide_content(parsed["topic"], parsed["slides"], context)
-    slides = build_slides(llm_output)
+    slides_data = generate_slide_content(parsed["topic"], parsed["slides"], context)
+    slides = build_slides(slides_data)
     slides_dict = slides_to_dict(slides)
-    session_id = create_session(slides_dict, parsed["topic"])
+
+    # Update session with real slides
+    update_session(session_id, slides_dict, "__init__")
+    # Clear the fake __init__ history entry
+    get_session(session_id)["history"] = []
 
     return JSONResponse(
         {
             "session_id": session_id,
             "topic": parsed["topic"],
             "slides": slides_dict,
+            "theme": theme,
         }
     )
 
 
 # ---------------------------------------------------------------------------
-# 2. PREVIEW  — return the current slide JSON for an existing session
+# 3. PREVIEW
 # ---------------------------------------------------------------------------
 @app.get("/preview/{session_id}")
 def preview_presentation(session_id: str):
@@ -97,13 +125,14 @@ def preview_presentation(session_id: str):
             "session_id": session_id,
             "topic": session["topic"],
             "slides": session["slides"],
+            "theme": session.get("theme", "corporate"),
             "edit_history": session["history"],
         }
     )
 
 
 # ---------------------------------------------------------------------------
-# 3. EDIT  — apply a natural-language instruction and update the session
+# 4. EDIT
 # ---------------------------------------------------------------------------
 @app.post("/edit")
 def edit_presentation(req: EditRequest):
@@ -111,11 +140,12 @@ def edit_presentation(req: EditRequest):
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    context_chunks = retrieve_context(req.instruction)
+    # Context from this session's uploads only
+    context_chunks = retrieve_context(req.session_id, req.instruction)
     context = "\n\n".join(context_chunks)
 
-    llm_output = edit_slide_content(session["slides"], req.instruction, context)
-    updated_slides = build_slides(llm_output)
+    updated_data = edit_slide_content(session["slides"], req.instruction, context)
+    updated_slides = build_slides(updated_data)
     updated_dict = slides_to_dict(updated_slides)
     update_session(req.session_id, updated_dict, req.instruction)
 
@@ -124,13 +154,14 @@ def edit_presentation(req: EditRequest):
             "session_id": req.session_id,
             "topic": session["topic"],
             "slides": updated_dict,
-            "edit_history": session["history"] + [req.instruction],
+            "theme": session.get("theme", "corporate"),
+            "edit_history": session["history"],
         }
     )
 
 
 # ---------------------------------------------------------------------------
-# 4. DOWNLOAD  — export the current session state as a .pptx file
+# 5. DOWNLOAD
 # ---------------------------------------------------------------------------
 @app.get("/download/{session_id}")
 def download_presentation(session_id: str):
@@ -139,12 +170,23 @@ def download_presentation(session_id: str):
         raise HTTPException(status_code=404, detail="Session not found")
 
     slides = dict_to_slides(session["slides"])
+    theme_name: str = session.get("theme", "corporate")
     safe_topic = session["topic"].strip().replace(" ", "_")
     filename = f"{safe_topic}.pptx"
-    output_path = export_ppt(slides, filename)
+    output_path = export_ppt(slides, filename, theme_name=theme_name)
 
     return FileResponse(
         path=output_path,
         media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
         filename=filename,
     )
+
+
+# ---------------------------------------------------------------------------
+# 6. DELETE SESSION — called when user hits "Start over"
+# Cleans up in-memory state AND the ChromaDB collection for this session
+# ---------------------------------------------------------------------------
+@app.delete("/session/{session_id}")
+def end_session(session_id: str):
+    delete_session(session_id)
+    return JSONResponse({"message": "Session cleared."})

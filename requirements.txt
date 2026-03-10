@@ -1,22 +1,28 @@
-# ── Web framework ────────────────────────────────────────────────────────────
+# ── Web framework ─────────────────────────────────────────────────────────────
 fastapi
-uvicorn[standard]          # ASGI server to run FastAPI
-python-multipart           # required by FastAPI for file uploads (UploadFile)
+uvicorn[standard]
+python-multipart
 
-# ── HTTP client (Ollama calls) ────────────────────────────────────────────────
-requests
-
-# ── PowerPoint generation ─────────────────────────────────────────────────────
-python-pptx
+# ── Local model inference ─────────────────────────────────────────────────────
+# For CUDA: pip install torch --index-url https://download.pytorch.org/whl/cu121
+torch
+transformers
+accelerate
 
 # ── Vector DB + embeddings ────────────────────────────────────────────────────
 chromadb
-sentence-transformers      # all-MiniLM-L6-v2 embedding model
+sentence-transformers
 
 # ── File parsing ──────────────────────────────────────────────────────────────
-pdfplumber                 # PDF text extraction
-python-docx                # DOCX text extraction
-# (TXT files use stdlib only — no extra package needed)
+pdfplumber
+python-docx
+
+# ── PowerPoint generation ─────────────────────────────────────────────────────
+python-pptx
+lxml                       # used for low-level PPTX XML manipulation
+
+# ── Image fetching (Unsplash) ─────────────────────────────────────────────────
+requests                   # for fetching stock images from Unsplash
 
 # ── Data validation ───────────────────────────────────────────────────────────
-pydantic                   # comes with FastAPI but listed explicitly for clarity
+pydantic

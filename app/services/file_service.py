@@ -1,19 +1,14 @@
 """
 file_service.py  —  app/services/file_service.py
 
-Handles uploaded files:
-  - Extracts text from PDF, DOCX, TXT
-  - Chunks the text
-  - Stores chunks in ChromaDB via context_service so they surface
-    automatically when retrieve_context() is called during /generate
+Extracts text from uploaded files and stores chunks scoped to a session.
 """
 
 import uuid
 import pdfplumber
 import docx
 from pathlib import Path
-from app.services.context_service import context_service
-
+from app.services.context_service import add_documents
 
 SUPPORTED_EXTENSIONS = {".pdf", ".docx", ".txt"}
 
@@ -35,8 +30,7 @@ def extract_text_from_pdf(file_path: str) -> str:
 
 def extract_text_from_docx(file_path: str) -> str:
     doc = docx.Document(file_path)
-    paragraphs = [p.text for p in doc.paragraphs if p.text.strip()]
-    return "\n\n".join(paragraphs)
+    return "\n\n".join(p.text for p in doc.paragraphs if p.text.strip())
 
 
 def extract_text_from_txt(file_path: str) -> str:
@@ -52,41 +46,34 @@ def extract_text(file_path: str) -> str:
     elif ext == ".txt":
         return extract_text_from_txt(file_path)
     else:
-        raise ValueError(
-            f"Unsupported file type: {ext}. Supported: {SUPPORTED_EXTENSIONS}"
-        )
+        raise ValueError(f"Unsupported file type: {ext}")
 
 
 # ---------------------------------------------------------------------------
-# Chunking  (simple fixed-size with overlap)
+# Chunking
 # ---------------------------------------------------------------------------
 
 
 def chunk_text(text: str, chunk_size: int = 500, overlap: int = 50) -> list[str]:
-    """
-    Split text into overlapping chunks so long documents don't lose context
-    at chunk boundaries.
-    """
     words = text.split()
     chunks = []
     start = 0
     while start < len(words):
-        end = start + chunk_size
-        chunk = " ".join(words[start:end])
+        chunk = " ".join(words[start : start + chunk_size])
         chunks.append(chunk)
         start += chunk_size - overlap
     return chunks
 
 
 # ---------------------------------------------------------------------------
-# Main entry point — call this from the /upload endpoint
+# Ingest — scoped to a session_id
 # ---------------------------------------------------------------------------
 
 
-def ingest_file(file_path: str, source_name: str) -> dict:
+def ingest_file(file_path: str, source_name: str, session_id: str) -> dict:
     """
-    Extract text from a file, chunk it, and store in ChromaDB.
-    Returns metadata about what was ingested.
+    Extract, chunk, embed and store file content scoped to session_id.
+    Only this session can retrieve these chunks.
     """
     text = extract_text(file_path)
     chunks = chunk_text(text)
@@ -94,11 +81,11 @@ def ingest_file(file_path: str, source_name: str) -> dict:
     if not chunks:
         raise ValueError("No text could be extracted from the file.")
 
-    # Build unique IDs and metadata for each chunk
-    ids = [f"{source_name}_{i}_{uuid.uuid4().hex[:8]}" for i in range(len(chunks))]
+    ids = [f"{session_id}_{i}_{uuid.uuid4().hex[:6]}" for i in range(len(chunks))]
     metadatas = [{"source": source_name, "chunk_index": i} for i in range(len(chunks))]
 
-    context_service.add_documents(
+    add_documents(
+        session_id=session_id,
         documents=chunks,
         metadata=metadatas,
         ids=ids,
